@@ -144,6 +144,7 @@ def mock_auth() -> Generator[MagicMock, None, None]:
 
     auth.login = AsyncMock(side_effect=login)
     auth.refresh = AsyncMock(return_value=TOKENS)
+    auth.submit_email_code = AsyncMock(return_value=TOKENS)
     browser = MagicMock()
     browser.url = "https://login.engie.nl/oauth2/default/v1/authorize?x=1"
     browser.state = "st"

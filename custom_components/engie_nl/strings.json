@@ -3,10 +3,17 @@
     "step": {
       "user": {
         "title": "Log in to Mijn ENGIE",
-        "description": "Enter the email address and password you use for the ENGIE app or mijn.engie.nl. The password is used once to log in through ENGIE's login server and is not stored; only the resulting session is.",
+        "description": "Enter the email address and password you use for the ENGIE app or mijn.engie.nl. ENGIE will then email you a one-time code. The password is used once to log in and is not stored.",
         "data": {
           "username": "Email address",
           "password": "Password"
+        }
+      },
+      "email_code": {
+        "title": "Enter the code ENGIE emailed you",
+        "description": "ENGIE sent a one-time code to your account's email address. It expires after a few minutes; if it does, start the setup again to get a new one.",
+        "data": {
+          "code": "Code from the email"
         }
       },
       "browser": {
@@ -28,7 +35,8 @@
       "invalid_auth": "ENGIE rejected the email address or password.",
       "invalid_callback": "That address did not contain a valid code. Start again from the link above and copy the full address.",
       "cannot_connect": "Could not reach ENGIE's servers. Try again in a moment.",
-      "unknown": "Something went wrong. Please try again."
+      "unknown": "Something went wrong. Please try again.",
+      "invalid_code": "That code was not accepted. It may have expired; start the setup again to get a new one."
     },
     "abort": {
       "already_configured": "This ENGIE account is already set up.",
@@ -53,21 +61,51 @@
   },
   "entity": {
     "sensor": {
-      "reading_normal": { "name": "Meter reading normal" },
-      "reading_low": { "name": "Meter reading low" },
-      "reading_return_normal": { "name": "Meter reading return normal" },
-      "reading_return_low": { "name": "Meter reading return low" },
-      "consumption_last_day": { "name": "Consumption last day" },
-      "return_last_day": { "name": "Return last day" },
-      "reading_gas": { "name": "Meter reading" },
-      "last_reading_date": { "name": "Last reading date" },
-      "prepayment_current": { "name": "Monthly payment" },
-      "prepayment_advice": { "name": "Monthly payment advice" },
-      "estimated_year_total": { "name": "Estimated year total" },
-      "open_amount": { "name": "Open amount" },
-      "last_transaction": { "name": "Last transaction" },
-      "day_ahead_electricity": { "name": "Day-ahead electricity price" },
-      "day_ahead_gas": { "name": "Day-ahead gas price" }
+      "reading_normal": {
+        "name": "Meter reading normal"
+      },
+      "reading_low": {
+        "name": "Meter reading low"
+      },
+      "reading_return_normal": {
+        "name": "Meter reading return normal"
+      },
+      "reading_return_low": {
+        "name": "Meter reading return low"
+      },
+      "consumption_last_day": {
+        "name": "Consumption last day"
+      },
+      "return_last_day": {
+        "name": "Return last day"
+      },
+      "reading_gas": {
+        "name": "Meter reading"
+      },
+      "last_reading_date": {
+        "name": "Last reading date"
+      },
+      "prepayment_current": {
+        "name": "Monthly payment"
+      },
+      "prepayment_advice": {
+        "name": "Monthly payment advice"
+      },
+      "estimated_year_total": {
+        "name": "Estimated year total"
+      },
+      "open_amount": {
+        "name": "Open amount"
+      },
+      "last_transaction": {
+        "name": "Last transaction"
+      },
+      "day_ahead_electricity": {
+        "name": "Day-ahead electricity price"
+      },
+      "day_ahead_gas": {
+        "name": "Day-ahead gas price"
+      }
     }
   }
 }

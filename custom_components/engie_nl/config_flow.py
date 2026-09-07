@@ -1,10 +1,13 @@
 """Config flow for the ENGIE Energie NL integration.
 
-Step ``user`` takes the Mijn ENGIE username and password and logs in through
-Okta's Authn API. If the account has a second factor, Okta refuses that path
-and the flow moves to step ``browser``: the user opens a URL, logs in with
-MFA, and pastes back the ``engie://login/okta/callback?code=...`` URL that the
-browser could not open. Either way only the token pair is stored.
+Step ``user`` takes the Mijn ENGIE email and password. ENGIE's Okta then emails
+a one-time code, so step ``email_code`` collects it and finishes the login. An
+account carrying a factor this client cannot answer falls back to step
+``browser``: the user opens a URL, logs in, and pastes back the
+``engie://login/okta/callback?code=...`` URL the browser could not open.
+
+Only the token pair is stored. The code is needed once, at setup and at reauth;
+the refresh token keeps every later poll out of the mailbox.
 """
 
 from __future__ import annotations
@@ -29,8 +32,10 @@ from homeassistant.helpers.selector import (
 
 from engie_nl import (
     BrowserLogin,
+    EmailChallenge,
     EngieAuthError,
     EngieClient,
+    EngieEmailCodeRequired,
     EngieError,
     EngieMfaRequiredError,
     EngieNetworkError,
@@ -60,6 +65,7 @@ USER_SCHEMA = vol.Schema(
     }
 )
 BROWSER_SCHEMA = vol.Schema({vol.Required("callback_url"): _CALLBACK})
+EMAIL_CODE_SCHEMA = vol.Schema({vol.Required("code"): str})
 REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): _PASSWORD})
 
 
@@ -71,6 +77,7 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._username: str | None = None
         self._browser: BrowserLogin | None = None
+        self._email_challenge: EmailChallenge | None = None
         self._auth: OktaAuth | None = None
 
     def _get_auth(self) -> OktaAuth:
@@ -94,12 +101,19 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         return self.async_create_entry(title=f"ENGIE {customer_id}", data=data)
 
     async def _login(self, username: str, password: str, errors: dict[str, str]) -> TokenSet | None:
-        """Password login; on MFA set up the browser step and return ``None`` with no error."""
+        """Password login.
+
+        Returns the tokens only when no second factor is involved. Otherwise it
+        arms the next step and returns ``None`` with no error: an emailed code
+        (the normal case for ENGIE) or, for a factor this client cannot answer,
+        the browser flow.
+        """
         try:
             return await self._get_auth().login(username, password)
+        except EngieEmailCodeRequired as err:
+            self._email_challenge = err.challenge
         except EngieMfaRequiredError:
             self._browser = self._get_auth().begin_browser_login()
-            return None
         except EngieAuthError:
             errors["base"] = "invalid_auth"
         except EngieNetworkError:
@@ -107,6 +121,14 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         except EngieError:
             _LOGGER.exception("Unexpected error while logging in to ENGIE")
             errors["base"] = "unknown"
+        return None
+
+    async def _next_step_after_password(self) -> ConfigFlowResult | None:
+        """Whichever second step the password attempt armed, if any."""
+        if self._email_challenge is not None:
+            return await self.async_step_email_code()
+        if self._browser is not None:
+            return await self.async_step_browser()
         return None
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -117,9 +139,26 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             tokens = await self._login(self._username, user_input[CONF_PASSWORD], errors)
             if tokens is not None:
                 return await self._finish(tokens)
-            if self._browser is not None:
-                return await self.async_step_browser()
+            nxt = await self._next_step_after_password()
+            if nxt is not None:
+                return nxt
         return self.async_show_form(step_id="user", data_schema=USER_SCHEMA, errors=errors)
+
+    async def async_step_email_code(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Take the one-time code ENGIE emailed and finish the login."""
+        errors: dict[str, str] = {}
+        if user_input is not None and self._email_challenge is not None:
+            try:
+                tokens = await self._get_auth().submit_email_code(self._email_challenge, user_input["code"])
+            except EngieNetworkError:
+                errors["base"] = "cannot_connect"
+            except EngieAuthError:
+                # Okta rejects a wrong code and an expired one the same way, and
+                # the code dies with the transaction after a few minutes.
+                errors["base"] = "invalid_code"
+            else:
+                return await self._finish(tokens)
+        return self.async_show_form(step_id="email_code", data_schema=EMAIL_CODE_SCHEMA, errors=errors)
 
     async def async_step_browser(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         """MFA accounts: open the URL, paste the callback."""
@@ -154,8 +193,9 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             tokens = await self._login(self._username, user_input[CONF_PASSWORD], errors)
             if tokens is not None:
                 return await self._finish(tokens)
-            if self._browser is not None:
-                return await self.async_step_browser()
+            nxt = await self._next_step_after_password()
+            if nxt is not None:
+                return nxt
         return self.async_show_form(
             step_id="reauth_confirm",
             data_schema=REAUTH_SCHEMA,

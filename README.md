@@ -40,13 +40,17 @@ under Settings, Devices & services.
 
 ## Login
 
-Enter the email address and password of your Mijn ENGIE account. The password
-is used once to log in through ENGIE's login server (Okta) and is not stored;
-the integration keeps only the resulting session and renews it itself.
+Enter the email address and password of your Mijn ENGIE account. ENGIE then
+emails a one-time code, and the next screen asks for it. The code expires after
+a few minutes; if it does, start the setup again to get a new one.
 
-If your account has two-factor authentication, the flow shows a link. Open it,
-log in, and copy the address the browser then fails to open (it starts with
-`engie://login/okta/callback?code=`) into the form.
+The password and the code are used once and are not stored. The integration
+keeps only the resulting session and renews it by itself, so you are not asked
+for a code again unless the session is lost, which triggers a reauth prompt.
+
+If your account uses a factor other than email, the flow shows a link instead.
+Open it, log in, and copy the address the browser then fails to open (it starts
+with `engie://login/okta/callback?code=`) into the form.
 
 ## Development
 
