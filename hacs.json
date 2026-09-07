@@ -1,0 +1,6 @@
+{
+  "name": "ENGIE Energie NL",
+  "homeassistant": "2025.2.0",
+  "content_in_root": false,
+  "render_readme": true
+}
