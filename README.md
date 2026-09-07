@@ -48,6 +48,22 @@ If your account has two-factor authentication, the flow shows a link. Open it,
 log in, and copy the address the browser then fails to open (it starts with
 `engie://login/okta/callback?code=`) into the form.
 
+## Development
+
+```sh
+uv venv .venv && uv pip install pytest-homeassistant-custom-component -e ../engie-nl
+# the harness loads custom components from its own testing_config directory
+ln -s "$PWD/custom_components/engie_nl" \
+  "$(.venv/bin/python -c 'import pytest_homeassistant_custom_component as p, pathlib; print(pathlib.Path(p.__file__).parent / "testing_config" / "custom_components")')/engie_nl"
+.venv/bin/pytest
+```
+
+`pylint` run from this directory reports `E0611: No name ... in module 'engie_nl'`
+for every import from the library. That is a name clash: the component directory
+is also called `engie_nl`, and pylint puts `custom_components/` on its path. Home
+Assistant imports the component as `custom_components.engie_nl`, so the clash does
+not exist at runtime; the tests are the check.
+
 ## Privacy
 
 Diagnostics redact tokens, your customer number, EANs, names, address and bank
