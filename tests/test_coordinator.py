@@ -73,3 +73,25 @@ async def test_the_user_record_is_still_essential(
     config_entry.add_to_hass(hass)
     assert not await hass.config_entries.async_setup(config_entry.entry_id)
     assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_account_reads_run_even_when_nothing_is_delivered(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """Documents, outages and the daily message do not name an EAN.
+
+    They answered 200 on the live account while both connections were still
+    has_data: false, so skipping them with the per-EAN reads left five sensors
+    empty for no reason.
+    """
+    mock_client.get_user = AsyncMock(return_value=_user_without_data())
+    await _setup(hass, config_entry)
+
+    data = config_entry.runtime_data.data
+    assert data.documents, "documents should still be read"
+    assert data.outages, "outages should still be read"
+    assert data.welcome is not None
+    assert data.house is not None
+    mock_client.get_consumptions.assert_not_called()
+    mock_client.get_estimations.assert_not_called()
+    mock_client.tariffs.get.assert_not_called()

@@ -168,47 +168,22 @@ class EngieCoordinator(DataUpdateCoordinator[EngieData]):
         # delivery starts. Asking anyway turns a normal account waiting for its
         # start date into an entry that logs an error every hour. Measured
         # 2026-09-07 on an account whose contract began two days later.
-        eans = [ean for ean, ean_data in data.eans.items() if ean_data.point.has_data is not False]
-        if not eans:
-            _LOGGER.debug(
-                "ENGIE account %s has %d connection(s), none delivering data yet",
-                user.customer_id,
-                len(data.eans),
-            )
-            return data
-
         today = dt_util.now().date()
+
+        # Reads that ask about the account, not about a connection. They answer
+        # whether or not supply has started, so they are never skipped: measured
+        # 2026-09-08, /documents, /outages, /user/welcome and /address-metadata
+        # all answered 200 on an account whose two connections were both still
+        # has_data: false.
         reads: list[tuple[str, Any]] = [
-            (
-                "consumptions",
-                self.client.get_consumptions(
-                    eans, start=today - timedelta(days=CONSUMPTION_DAYS), end=today
-                ),
-            ),
-            (
-                "meterstands",
-                self.client.get_meter_readings(
-                    eans, start=today - timedelta(days=READINGS_DAYS), end=today
-                ),
-            ),
-            ("estimations", self.client.get_estimations(eans, amount=_prepayment_amount(user))),
             ("transactions", self.client.get_transactions()),
-            ("mandates", self.client.get_mandates(eans)),
             ("documents", self.client.get_documents()),
             ("mer_periods", self.client.get_mer_periods()),
             ("outages", self.client.get_outages(user.customer_id)),
             ("welcome", self.client.account.welcome()),
             ("happy_hours", self.client.happy_hour.hours()),
-            (
-                "tariffs",
-                self.client.tariffs.get(
-                    eans, start=today, end=today + timedelta(days=TARIFF_WINDOW_DAYS)
-                ),
-            ),
         ]
-        address = next(
-            (a for a in user.delivery_addresses if a.zip_code and a.house_nr), None
-        )
+        address = next((a for a in user.delivery_addresses if a.zip_code and a.house_nr), None)
         if address is not None:
             reads.append(
                 (
@@ -223,6 +198,43 @@ class EngieCoordinator(DataUpdateCoordinator[EngieData]):
         if self.include_day_ahead:
             reads.append(("day_ahead_E", self.client.get_day_ahead_prices(EnergyType.ELECTRICITY)))
             reads.append(("day_ahead_G", self.client.get_day_ahead_prices(EnergyType.GAS)))
+
+        # Reads that name an EAN. ENGIE answers 400 "not-owned" for a connection
+        # it does not supply yet, and the user record says so first in has_data,
+        # so asking anyway would log an error every hour on a healthy account
+        # waiting for its start date.
+        eans = [ean for ean, ean_data in data.eans.items() if ean_data.point.has_data is not False]
+        if eans:
+            reads.extend(
+                [
+                    (
+                        "consumptions",
+                        self.client.get_consumptions(
+                            eans, start=today - timedelta(days=CONSUMPTION_DAYS), end=today
+                        ),
+                    ),
+                    (
+                        "meterstands",
+                        self.client.get_meter_readings(
+                            eans, start=today - timedelta(days=READINGS_DAYS), end=today
+                        ),
+                    ),
+                    ("estimations", self.client.get_estimations(eans, amount=_prepayment_amount(user))),
+                    ("mandates", self.client.get_mandates(eans)),
+                    (
+                        "tariffs",
+                        self.client.tariffs.get(
+                            eans, start=today, end=today + timedelta(days=TARIFF_WINDOW_DAYS)
+                        ),
+                    ),
+                ]
+            )
+        else:
+            _LOGGER.debug(
+                "ENGIE account %s has %d connection(s), none delivering data yet",
+                user.customer_id,
+                len(data.eans),
+            )
 
         results = await asyncio.gather(*(call for _, call in reads), return_exceptions=True)
         for (name, _), result in zip(reads, results):
