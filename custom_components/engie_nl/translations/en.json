@@ -105,6 +105,53 @@
       },
       "day_ahead_gas": {
         "name": "Day-ahead gas price"
+      },
+      "tariff_normal": {
+        "name": "Tariff"
+      },
+      "tariff_low": {
+        "name": "Tariff low"
+      },
+      "tariff_feed_in": {
+        "name": "Feed-in tariff"
+      },
+      "tariff_gas": {
+        "name": "Tariff"
+      },
+      "standing_charge": {
+        "name": "Standing charge"
+      },
+      "product": {
+        "name": "Product"
+      },
+      "welcome_message": {
+        "name": "Message of the day"
+      },
+      "outages": {
+        "name": "Outage messages"
+      },
+      "documents": {
+        "name": "Documents"
+      },
+      "monthly_reports": {
+        "name": "Monthly reports"
+      },
+      "energy_label": {
+        "name": "Energy label"
+      }
+    },
+    "binary_sensor": {
+      "delivering": {
+        "name": "Delivering"
+      },
+      "smart_meter": {
+        "name": "Smart meter"
+      },
+      "data_mandate": {
+        "name": "Data mandate"
+      },
+      "outage": {
+        "name": "Outage"
       }
     }
   }

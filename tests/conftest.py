@@ -19,16 +19,20 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from engie_nl import (
     Consumption,
     ConsumptionSeries,
+    DocumentRef,
     EngieAuthError,
     EstimationCosts,
+    Mandate,
     MeteringPoint,
     MeterReadings,
+    OutageMessage,
     Reading,
     Register,
     TokenSet,
     Transaction,
     User,
 )
+from engie_nl.generated import AddressMetaData, HappyHoursResponse, MGWTariffsResponse, WarmWelcomeResponse
 
 from custom_components.engie_nl.const import CONF_CUSTOMER_ID, CONF_TOKENS, DOMAIN
 
@@ -57,9 +61,14 @@ def make_user() -> User:
                     "house_nr": "1",
                     "zip_code": "1234AB",
                     "city": "Stad",
+                    "zip_code": "1234AB",
+                    "house_nr": "1",
                     "metering_points": [
-                        {"ean": EAN_E, "type": "E", "smart": True, "prepayment_amount": 187},
-                        {"ean": EAN_G, "type": "G", "smart": True},
+                        {"ean": EAN_E, "type": "E", "smart": True, "readable": True,
+                         "has_data": True, "single_tariff": False, "prepayment_amount": 187,
+                         "current_product": {"name": "ENGIE Opgewekt", "start_date": "2026-09-09"}},
+                        {"ean": EAN_G, "type": "G", "smart": True, "readable": True,
+                         "has_data": True, "single_tariff": True},
                     ],
                 }
             ],
@@ -114,6 +123,36 @@ def make_transactions() -> list[Transaction]:
     ]
 
 
+def make_tariffs() -> MGWTariffsResponse:
+    """One contract's rates in the shape /api/v1/tariffs declares.
+
+    Invented from the app's model, not copied from a response: the endpoint
+    refuses an EAN before its delivery starts, so no real body exists yet. The
+    numbers are the signed ENGIE Opgewekt rates so a wrong grouping in the
+    coordinator shows up as a wrong sensor here.
+    """
+    return MGWTariffsResponse.from_api(
+        {
+            "tariffs": [
+                {"ean": EAN_E, "tariff_type": "PEAK", "unit_of_measure": "PER_UNIT",
+                 "use_for_feed_in": "NO", "price_ex": 0.22787, "tax": 0.04788,
+                 "date_start": "2026-09-09T00:00:00+02:00", "description": "Enkeltarief"},
+                {"ean": EAN_E, "tariff_type": "OFFPEAK", "unit_of_measure": "PER_UNIT",
+                 "use_for_feed_in": "NO", "price_ex": 0.19787, "tax": 0.04788},
+                {"ean": EAN_E, "tariff_type": "PEAK", "unit_of_measure": "PER_UNIT",
+                 "use_for_feed_in": "YES", "price_ex": 0.05, "tax": 0.0},
+                {"ean": EAN_E, "tariff_type": "SINGLE", "unit_of_measure": "DAY",
+                 "use_for_feed_in": "NO", "price_ex": 0.30445, "tax": 0.06393},
+                {"ean": EAN_G, "tariff_type": "SINGLE", "unit_of_measure": "PER_UNIT",
+                 "use_for_feed_in": "NO", "price_ex": 1.23011, "tax": 0.27353},
+                {"ean": EAN_G, "tariff_type": "SINGLE", "unit_of_measure": "DAY",
+                 "use_for_feed_in": "NO", "price_ex": 0.19486, "tax": 0.04092},
+            ],
+            "types": [{"ean": EAN_E, "is_single": False}, {"ean": EAN_G, "is_single": True}],
+        }
+    )
+
+
 @pytest.fixture
 def mock_client() -> Generator[MagicMock, None, None]:
     """A fake EngieClient whose reads return the fixtures above."""
@@ -124,6 +163,26 @@ def mock_client() -> Generator[MagicMock, None, None]:
     client.get_estimations = AsyncMock(return_value=make_estimations())
     client.get_transactions = AsyncMock(return_value=make_transactions())
     client.get_day_ahead_prices = AsyncMock(return_value=[])
+    client.get_documents = AsyncMock(return_value=[DocumentRef.from_api(
+        {"reference": "doc-1", "title": "Termijnnota september", "date": "2026-09-01"})])
+    client.get_mandates = AsyncMock(return_value=[
+        Mandate.from_api({"ean": EAN_E, "data": {"approval_version": "2", "start_date": "2026-09-09"}}),
+    ])
+    client.get_mer_periods = AsyncMock(return_value=[])
+    client.get_outages = AsyncMock(return_value=[
+        OutageMessage.from_api({"id": "o1", "title": "Onderhoud", "message": "Kortdurende storing"}),
+    ])
+    client.tariffs.get = AsyncMock(return_value=make_tariffs())
+    client.account.welcome = AsyncMock(return_value=WarmWelcomeResponse.from_api(
+        {"message": "Goedenavond. Morgen is stroom het goedkoopst rond 15 uur.",
+         "meteorological_context": {"weather_description": "RAINY",
+                                    "sunrise_at": "2026-09-08T07:00:00+02:00",
+                                    "sunset_at": "2026-09-08T20:13:00+02:00"}}))
+    client.happy_hour.hours = AsyncMock(return_value=HappyHoursResponse.from_api(
+        {"eligible": False, "discount_percentage": 0, "discount_threshold": 0, "happy_hours": []}))
+    client.address.metadata = AsyncMock(return_value=AddressMetaData.from_api(
+        {"construction_year": 1935, "type": "Etagewoning", "energy_label": "G",
+         "surface_size": 70, "sale_rent": "Huurwoning"}))
     client.tokens = TOKENS
     with (
         patch("custom_components.engie_nl.EngieClient", return_value=client),

@@ -3,6 +3,14 @@
 ``async_redact_data`` matches keys exactly, so every spelling that carries a
 token or an identifier is listed. The EAN is also a device serial number and
 the unique-id prefix of every metering-point entity, so it is redacted too.
+
+Two payloads are personal in ways a key name cannot catch.
+``/api/v1/user/welcome`` greets the customer by first name inside its
+``message``, so that key is redacted. ``/api/v1/address-metadata`` describes
+the house itself, and its most identifying field arrives under the key
+``type``, which elsewhere holds the harmless ``ELK``/``GAS``. Redacting
+``type`` would hide that too, so the house payload is reported as fetched or
+not and never included.
 """
 
 from __future__ import annotations
@@ -47,6 +55,8 @@ TO_REDACT = {
     "id",
     "reference",
     "parent_reference",
+    # /api/v1/user/welcome greets the customer by name inside the message.
+    "message",
 }
 
 
@@ -75,11 +85,19 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: EngieCo
                 "point": _raw(ean.point),
                 "consumptions": _raw(ean.consumptions),
                 "readings": _raw(ean.readings),
+                "mandate": _raw(ean.mandate),
+                "tariffs": [_raw(t) for t in ean.tariffs.entries] if ean.tariffs else None,
             }
             for i, ean in enumerate(data.eans.values())
         },
         "estimations": _raw(data.estimations),
         "transactions": [_raw(t) for t in data.transactions],
         "day_ahead": {k: [_raw(p) for p in v] for k, v in data.day_ahead.items()},
+        "documents": [_raw(d) for d in data.documents],
+        "outages": [_raw(o) for o in data.outages],
+        "mer_periods": [_raw(m) for m in data.mer_periods],
+        "welcome": _raw(data.welcome),
+        "happy_hours": _raw(data.happy_hours),
+        "house": {"fetched": data.house is not None},
     }
     return async_redact_data(payload, TO_REDACT)

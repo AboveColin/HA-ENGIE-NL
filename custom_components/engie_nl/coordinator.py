@@ -17,6 +17,7 @@ from homeassistant.util import dt as dt_util
 from engie_nl import (
     ConsumptionSeries,
     DayAheadPrice,
+    DocumentRef,
     EnergyType,
     EngieApiError,
     EngieAuthError,
@@ -24,11 +25,15 @@ from engie_nl import (
     EngieError,
     EngieNetworkError,
     EstimationCosts,
+    Mandate,
+    MerPeriod,
     MeteringPoint,
     MeterReadings,
+    OutageMessage,
     Transaction,
     User,
 )
+from engie_nl.generated import AddressMetaData, HappyHoursResponse, MGWTariff, WarmWelcomeResponse
 
 from .const import (
     CONF_INCLUDE_DAY_AHEAD,
@@ -40,6 +45,7 @@ from .const import (
     GAS_KINDS,
     MIN_SCAN_INTERVAL_MINUTES,
     READINGS_DAYS,
+    TARIFF_WINDOW_DAYS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +62,34 @@ def energy_kind(point: MeteringPoint) -> str | None:
 
 
 @dataclass
+class TariffView:
+    """The contract rates for one connection, read out of ``GET /api/v1/tariffs``.
+
+    **The grouping below is unverified.** The endpoint refuses an EAN the
+    customer does not supply yet, so on 2026-09-08 it could not be called on a
+    real contract; the rules come from the app's model, not from a response.
+    Each field is None when nothing matched, never a guessed number, so a wrong
+    rule shows up as an unavailable sensor rather than a wrong price.
+
+    ``price_ex`` and ``tax`` are separate on the wire, so the all-in rate is
+    their sum. ``unit_of_measure`` separates a per-unit rate from a standing
+    charge, and ``use_for_feed_in`` marks the teruglevering rate.
+    """
+
+    normal: float | None = None
+    low: float | None = None
+    single: float | None = None
+    feed_in: float | None = None
+    standing_charge: float | None = None
+    entries: list[MGWTariff] = field(default_factory=list)
+
+    @property
+    def any_rate(self) -> float | None:
+        """The rate to show when a connection has one tariff, not two."""
+        return self.single if self.single is not None else self.normal
+
+
+@dataclass
 class EanData:
     """Everything the coordinator knows about one metering point."""
 
@@ -63,6 +97,8 @@ class EanData:
     energy: str | None
     consumptions: ConsumptionSeries | None = None
     readings: MeterReadings | None = None
+    tariffs: TariffView | None = None
+    mandate: Mandate | None = None
 
 
 @dataclass
@@ -74,6 +110,12 @@ class EngieData:
     estimations: EstimationCosts | None = None
     transactions: list[Transaction] = field(default_factory=list)
     day_ahead: dict[str, list[DayAheadPrice]] = field(default_factory=dict)
+    documents: list[DocumentRef] = field(default_factory=list)
+    outages: list[OutageMessage] = field(default_factory=list)
+    mer_periods: list[MerPeriod] = field(default_factory=list)
+    welcome: WarmWelcomeResponse | None = None
+    happy_hours: HappyHoursResponse | None = None
+    house: AddressMetaData | None = None
     fetched_at: datetime = field(default_factory=dt_util.utcnow)
 
 
@@ -151,7 +193,33 @@ class EngieCoordinator(DataUpdateCoordinator[EngieData]):
             ),
             ("estimations", self.client.get_estimations(eans, amount=_prepayment_amount(user))),
             ("transactions", self.client.get_transactions()),
+            ("mandates", self.client.get_mandates(eans)),
+            ("documents", self.client.get_documents()),
+            ("mer_periods", self.client.get_mer_periods()),
+            ("outages", self.client.get_outages(user.customer_id)),
+            ("welcome", self.client.account.welcome()),
+            ("happy_hours", self.client.happy_hour.hours()),
+            (
+                "tariffs",
+                self.client.tariffs.get(
+                    eans, start=today, end=today + timedelta(days=TARIFF_WINDOW_DAYS)
+                ),
+            ),
         ]
+        address = next(
+            (a for a in user.delivery_addresses if a.zip_code and a.house_nr), None
+        )
+        if address is not None:
+            reads.append(
+                (
+                    "house",
+                    self.client.address.metadata(
+                        zip_code=(address.zip_code or "").replace(" ", "").upper(),
+                        house_nr=str(address.house_nr),
+                        addition=address.house_nr_addition or "",
+                    ),
+                )
+            )
         if self.include_day_ahead:
             reads.append(("day_ahead_E", self.client.get_day_ahead_prices(EnergyType.ELECTRICITY)))
             reads.append(("day_ahead_G", self.client.get_day_ahead_prices(EnergyType.GAS)))
@@ -174,21 +242,79 @@ def _prepayment_amount(user: User) -> int:
     return next((int(p.prepayment_amount) for p in user.metering_points if p.prepayment_amount), 0)
 
 
+# Each best-effort read files itself into the poll's data. A dict of small
+# functions rather than a chain of elifs, so adding an endpoint is one line.
+_PER_EAN = {
+    "consumptions": lambda ean_data, value: setattr(ean_data, "consumptions", value),
+    "meterstands": lambda ean_data, value: setattr(ean_data, "readings", value),
+    "mandates": lambda ean_data, value: setattr(ean_data, "mandate", value),
+}
+
+_ON_ACCOUNT = {
+    "estimations": "estimations",
+    "transactions": "transactions",
+    "documents": "documents",
+    "mer_periods": "mer_periods",
+    "outages": "outages",
+    "welcome": "welcome",
+    "happy_hours": "happy_hours",
+    "house": "house",
+}
+
+
 def _store(data: EngieData, name: str, result: Any) -> None:
     """File one best-effort read into this poll's data."""
-    if name == "consumptions":
-        for series in result:
-            if series.ean in data.eans:
-                data.eans[series.ean].consumptions = series
-    elif name == "meterstands":
-        for reading in result:
-            if reading.ean in data.eans:
-                data.eans[reading.ean].readings = reading
-    elif name == "estimations":
-        data.estimations = result
-    elif name == "transactions":
-        data.transactions = result
+    if name in _PER_EAN:
+        assign = _PER_EAN[name]
+        for row in result:
+            if row.ean in data.eans:
+                assign(data.eans[row.ean], row)
+    elif name in _ON_ACCOUNT:
+        setattr(data, _ON_ACCOUNT[name], result)
+    elif name == "tariffs":
+        _store_tariffs(data, result)
     elif name == "day_ahead_E":
         data.day_ahead["electricity"] = result
     elif name == "day_ahead_G":
         data.day_ahead["gas"] = result
+
+
+def _store_tariffs(data: EngieData, result: Any) -> None:
+    """Group the flat tariff list by EAN and by what each entry prices."""
+    if result is None:
+        return
+    for entry in result.tariffs:
+        ean_data = data.eans.get(entry.ean or "")
+        if ean_data is None:
+            continue
+        if ean_data.tariffs is None:
+            ean_data.tariffs = TariffView()
+        _apply_tariff(ean_data.tariffs, entry)
+
+
+def _apply_tariff(view: TariffView, entry: MGWTariff) -> None:
+    """Put one tariff entry on the field it prices. See TariffView for the caveat."""
+    view.entries.append(entry)
+    rate = _all_in(entry)
+    if rate is None:
+        return
+    unit = str(entry.unit_of_measure or "").upper()
+    feed_in = str(entry.use_for_feed_in or "").upper()
+    kind = str(entry.tariff_type or "").upper()
+    if unit == "DAY":
+        view.standing_charge = rate
+    elif feed_in == "YES":
+        view.feed_in = rate
+    elif kind == "OFFPEAK":
+        view.low = rate
+    elif kind == "PEAK":
+        view.normal = rate
+    elif kind == "SINGLE":
+        view.single = rate
+
+
+def _all_in(entry: MGWTariff) -> float | None:
+    """``price_ex`` plus ``tax``; None when the entry carries neither."""
+    if entry.price_ex is None and entry.tax is None:
+        return None
+    return round((entry.price_ex or 0.0) + (entry.tax or 0.0), 6)

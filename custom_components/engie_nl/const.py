@@ -21,6 +21,12 @@ MIN_SCAN_INTERVAL_MINUTES = 15
 CONSUMPTION_DAYS = 14
 READINGS_DAYS = 60
 
+# The window asked of /api/v1/tariffs. Both dates are required (the gateway
+# answers 422 and names them otherwise), and a tariff entry carries its own
+# date_start and date_end, so a month forward covers a contract that changes
+# mid-period without pulling in a year of history.
+TARIFF_WINDOW_DAYS = 31
+
 # Values of MeteringPoint.kind seen or expected. The app's model stores it as
 # a free string; the live fixture decides which spelling is real.
 ELECTRICITY_KINDS = {"e", "elk", "electricity", "elektriciteit", "stroom", "power"}

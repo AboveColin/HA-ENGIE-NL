@@ -1,13 +1,17 @@
 {
   "domain": "engie_nl",
   "name": "ENGIE Energie NL",
-  "codeowners": ["@abovecolin"],
+  "codeowners": [
+    "@abovecolin"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/AboveColin/HA-ENGIE-NL",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/AboveColin/HA-ENGIE-NL/issues",
-  "requirements": ["engie-nl==0.2.0"],
-  "version": "0.1.0"
+  "requirements": [
+    "engie-nl==0.2.0"
+  ],
+  "version": "0.2.0"
 }

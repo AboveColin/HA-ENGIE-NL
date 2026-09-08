@@ -4,9 +4,14 @@ Per metering point: cumulative meter readings per register (kWh or m3,
 ``total_increasing``, so the Energy dashboard can use them), the most recent
 day's consumption and return, and the date of the latest reading.
 
+Per metering point also: the contract's own rates and standing charge, and
+which product supplies it from when.
+
 Per account: the current termijnbedrag and ENGIE's advice, the projected
 year total, the open amount across invoices, the last transaction, and, when
-enabled in the options, the current day-ahead prices.
+enabled in the options, the current day-ahead prices. Diagnostics cover
+documents, outages, monthly reports, the house ENGIE has on file and the daily
+welcome message, which carries the cheapest hour of tomorrow.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from homeassistant.util import dt as dt_util
 from engie_nl import Consumption, DayAheadPrice, Register, TransactionStatus
 
 from . import EngieConfigEntry
-from .coordinator import EanData, EngieCoordinator, EngieData
+from .coordinator import EanData, EngieCoordinator, EngieData, TariffView
 from .entity import EngieAccountEntity, EngieEanEntity
 
 # --- register classification --------------------------------------------------
@@ -108,6 +113,66 @@ def _day_attrs(data: EanData) -> dict[str, Any]:
     }
 
 
+def _tariffs(data: EanData) -> TariffView | None:
+    return data.tariffs
+
+
+def _rate(data: EanData, field_name: str) -> float | None:
+    view = data.tariffs
+    return getattr(view, field_name) if view is not None else None
+
+
+def _tariff_attrs(data: EanData) -> dict[str, Any]:
+    """The parts ENGIE priced separately, so the sum can be checked.
+
+    The grouping that produced these fields is unverified: see
+    :class:`~custom_components.engie_nl.coordinator.TariffView`. Publishing the
+    components means a wrong grouping is visible rather than silent.
+    """
+    view = data.tariffs
+    if view is None:
+        return {}
+    return {
+        "entries": [
+            {
+                "type": e.tariff_type,
+                "unit": e.unit_of_measure,
+                "feed_in": e.use_for_feed_in,
+                "price_ex": e.price_ex,
+                "tax": e.tax,
+                "from": e.date_start.isoformat() if e.date_start else None,
+                "to": e.date_end.isoformat() if e.date_end else None,
+                "description": e.description,
+            }
+            for e in view.entries
+        ]
+    }
+
+
+def _product(data: EanData):
+    """The product supplying this connection now, or the one that will."""
+    point = data.point
+    return point.current_product or point.next_product
+
+
+def _product_attrs(data: EanData) -> dict[str, Any]:
+    product = _product(data)
+    point = data.point
+    return {
+        "start_date": product.start_date.isoformat() if product and product.start_date else None,
+        "end_date": product.end_date.isoformat() if product and product.end_date else None,
+        "signed_date": product.signed_date.isoformat() if product and product.signed_date else None,
+        "is_current": point.current_product is not None,
+        "status_code": point.status_code,
+        "single_tariff": point.single_tariff,
+        "market_segment": point.market_segment,
+        "grid_owner": point.grid_owner_name,
+        "annual_estimate_normal": point.sjv_normal,
+        "annual_estimate_low": point.sjv_low,
+        "annual_estimate_single": point.sjv_single,
+    }
+
+
 @dataclass(frozen=True, kw_only=True)
 class EanSensorDescription(SensorEntityDescription):
     """A sensor on a metering point."""
@@ -166,6 +231,36 @@ EAN_SENSORS: tuple[EanSensorDescription, ...] = (
         device_class=SensorDeviceClass.DATE, entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=latest_reading_date,
     ),
+    # --- contract rates, from GET /api/v1/tariffs ---------------------------
+    EanSensorDescription(
+        key="tariff_normal", translation_key="tariff_normal", energy="electricity",
+        native_unit_of_measurement=f"{CURRENCY_EURO}/{_KWH}", suggested_display_precision=5,
+        value_fn=lambda d: _rate(d, "any_rate"), attr_fn=_tariff_attrs,
+    ),
+    EanSensorDescription(
+        key="tariff_low", translation_key="tariff_low", energy="electricity",
+        native_unit_of_measurement=f"{CURRENCY_EURO}/{_KWH}", suggested_display_precision=5,
+        value_fn=lambda d: _rate(d, "low"),
+    ),
+    EanSensorDescription(
+        key="tariff_feed_in", translation_key="tariff_feed_in", energy="electricity",
+        native_unit_of_measurement=f"{CURRENCY_EURO}/{_KWH}", suggested_display_precision=5,
+        value_fn=lambda d: _rate(d, "feed_in"),
+    ),
+    EanSensorDescription(
+        key="tariff_gas", translation_key="tariff_gas", energy="gas",
+        native_unit_of_measurement=f"{CURRENCY_EURO}/{_M3}", suggested_display_precision=5,
+        value_fn=lambda d: _rate(d, "any_rate"), attr_fn=_tariff_attrs,
+    ),
+    EanSensorDescription(
+        key="standing_charge", translation_key="standing_charge", energy="any",
+        native_unit_of_measurement=f"{CURRENCY_EURO}/d", suggested_display_precision=5,
+        value_fn=lambda d: _rate(d, "standing_charge"),
+    ),
+    EanSensorDescription(
+        key="product", translation_key="product", energy="any",
+        value_fn=lambda d: (p.name if (p := _product(d)) else None), attr_fn=_product_attrs,
+    ),
 )
 
 
@@ -206,6 +301,49 @@ def _price_attrs(prices: list[DayAheadPrice] | None) -> dict[str, Any]:
             {"start": p.start.isoformat() if p.start else None, "price": p.price, "price_ex": p.price_ex}
             for p in prices
         ]
+    }
+
+
+def _next_document(data: EngieData):
+    dated = [d for d in data.documents if d.day is not None]
+    return max(dated, key=lambda d: d.day or date.min) if dated else None
+
+
+def _outage_attrs(data: EngieData) -> dict[str, Any]:
+    return {
+        "messages": [
+            {"title": o.title, "message": o.message, "link": o.link_url} for o in data.outages
+        ]
+    }
+
+
+def _welcome_attrs(data: EngieData) -> dict[str, Any]:
+    """The weather ENGIE quotes alongside its daily message.
+
+    The message itself names the cheapest hour of tomorrow, which is the part
+    worth automating on, but ENGIE writes it as prose rather than a field, so
+    it stays a string.
+    """
+    welcome = data.welcome
+    if welcome is None or welcome.meteorological_context is None:
+        return {}
+    weather = welcome.meteorological_context
+    return {
+        "weather": weather.weather_description,
+        "sunrise": weather.sunrise_at.isoformat() if weather.sunrise_at else None,
+        "sunset": weather.sunset_at.isoformat() if weather.sunset_at else None,
+    }
+
+
+def _house_attrs(data: EngieData) -> dict[str, Any]:
+    house = data.house
+    if house is None:
+        return {}
+    return {
+        "construction_year": house.construction_year,
+        "type": house.type,
+        "surface_size": house.surface_size,
+        "tenure": house.sale_rent,
     }
 
 
@@ -258,6 +396,34 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
         native_unit_of_measurement=f"{CURRENCY_EURO}/{_M3}", suggested_display_precision=4,
         value_fn=lambda d: _price_now(d.day_ahead.get("gas")),
         attr_fn=lambda d: _price_attrs(d.day_ahead.get("gas")),
+    ),
+    AccountSensorDescription(
+        key="welcome_message", translation_key="welcome_message",
+        value_fn=lambda d: (d.welcome.message[:255] if d.welcome and d.welcome.message else None),
+        attr_fn=_welcome_attrs,
+    ),
+    AccountSensorDescription(
+        key="outages", translation_key="outages", entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(d.outages), attr_fn=_outage_attrs,
+    ),
+    AccountSensorDescription(
+        key="documents", translation_key="documents", entity_category=EntityCategory.DIAGNOSTIC,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(d.documents),
+        attr_fn=lambda d: {
+            "latest_title": doc.title, "latest_date": doc.day.isoformat() if doc.day else None,
+        } if (doc := _next_document(d)) else {},
+    ),
+    AccountSensorDescription(
+        key="monthly_reports", translation_key="monthly_reports",
+        entity_category=EntityCategory.DIAGNOSTIC, state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda d: len(d.mer_periods),
+    ),
+    AccountSensorDescription(
+        key="energy_label", translation_key="energy_label",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: d.house.energy_label if d.house else None, attr_fn=_house_attrs,
     ),
 )
 

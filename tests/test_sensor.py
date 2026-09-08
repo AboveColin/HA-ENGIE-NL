@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
+import pytest
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -30,9 +31,11 @@ async def test_entities_and_values(
 
     registry = er.async_get(hass)
     entries = er.async_entries_for_config_entry(registry, config_entry.entry_id)
-    # electricity: 4 readings + 2 last-day + date = 7; gas: reading + last-day + date = 3;
-    # account with day-ahead off: 5. Total 15.
-    assert len(entries) == 15
+    # electricity sensors: 4 readings + 2 last-day + date + 3 tariffs + standing
+    # charge + product = 12. Gas: reading + last-day + date + tariff + standing
+    # charge + product = 6. Account sensors with day-ahead off: 10. Binary: 3
+    # per EAN plus 1 on the account = 7. Total 35.
+    assert len(entries) == 35
 
     def state_of(unique_id: str) -> str:
         entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
@@ -148,3 +151,60 @@ async def test_unload(hass: HomeAssistant, mock_auth: MagicMock, mock_client: Ma
     assert await hass.config_entries.async_unload(config_entry.entry_id)
     await hass.async_block_till_done()
     assert config_entry.state is ConfigEntryState.NOT_LOADED
+
+
+async def test_contract_tariffs_are_grouped_per_ean(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """The grouping of GET /api/v1/tariffs is unverified, so pin it to a fixture.
+
+    The fixture uses the signed ENGIE Opgewekt rates. If ENGIE's real response
+    groups differently, this test still passes and the live values will be
+    wrong, which is why the components are published as attributes too.
+    """
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+
+    def state_of(unique_id: str) -> str:
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+        assert entity_id, unique_id
+        state = hass.states.get(entity_id)
+        assert state
+        return state.state
+
+    assert float(state_of(f"{EAN_E}_tariff_normal")) == pytest.approx(0.27575)
+    assert float(state_of(f"{EAN_E}_tariff_low")) == pytest.approx(0.24575)
+    assert float(state_of(f"{EAN_E}_tariff_feed_in")) == pytest.approx(0.05)
+    assert float(state_of(f"{EAN_E}_standing_charge")) == pytest.approx(0.36838)
+    assert float(state_of(f"{EAN_G}_tariff_gas")) == pytest.approx(1.50364)
+    assert float(state_of(f"{EAN_G}_standing_charge")) == pytest.approx(0.23578)
+    assert state_of(f"{EAN_E}_product") == "ENGIE Opgewekt"
+
+
+async def test_delivering_reflects_has_data(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """has_data is what the gateway checks before it answers any data endpoint."""
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+    entity_id = registry.async_get_entity_id("binary_sensor", DOMAIN, f"{EAN_E}_delivering")
+    assert entity_id
+    state = hass.states.get(entity_id)
+    assert state and state.state == "on"
+    assert state.attributes["product"] == "ENGIE Opgewekt"
+
+
+async def test_diagnostics_redact_the_welcome_name_and_the_house(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """Neither is caught by a token-shaped key name, so both are listed explicitly."""
+    await _setup(hass, config_entry)
+    payload = await async_get_config_entry_diagnostics(hass, config_entry)
+    text = str(payload)
+    assert "Goedenavond" not in text
+    assert "Etagewoning" not in text
+    assert "1935" not in text
+    assert payload["welcome"]["message"] == "**REDACTED**"
+    assert payload["house"] == {"fetched": True}
+    # The weather alongside it is not personal and stays readable.
+    assert payload["welcome"]["meteorological_context"]["weather_description"] == "RAINY"

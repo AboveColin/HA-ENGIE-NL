@@ -1,9 +1,10 @@
 # ENGIE Energie NL for Home Assistant
 
 Reads your Mijn ENGIE account into Home Assistant: meter readings per register,
-the last day's consumption and return per connection, your termijnbedrag and
-ENGIE's advice for it, the projected year total, open invoices, and optionally
-the day-ahead prices of ENGIE's dynamic contract.
+the last day's consumption and return per connection, the contract's own rates
+and standing charge, your termijnbedrag and ENGIE's advice for it, the projected
+year total, open invoices, outages, and optionally the day-ahead prices of
+ENGIE's dynamic contract.
 
 It uses the same private gateway the ENGIE app uses, through the
 [engie-nl](https://github.com/AboveColin/engie-nl) Python package. ENGIE does
@@ -14,19 +15,45 @@ until it is updated.
 
 One device per connection (EAN) and one for the account.
 
-| Device | Sensor | Unit | Notes |
+| Device | Entity | Unit | Notes |
 |---|---|---|---|
 | Elektriciteit | Meter reading normal / low | kWh | cumulative, usable in the Energy dashboard |
 | Elektriciteit | Meter reading return normal / low | kWh | teruglevering, cumulative |
 | Elektriciteit | Consumption last day, Return last day | kWh | the newest day ENGIE has; attributes hold the date and the split |
+| Elektriciteit | Tariff, Tariff low, Feed-in tariff | EUR/kWh | the contract's own rates, all-in |
 | Gas | Meter reading | m3 | cumulative |
 | Gas | Consumption last day | m3 | |
+| Gas | Tariff | EUR/m3 | all-in |
+| both | Standing charge | EUR/day | vastrecht |
+| both | Product | | the supplying product, with start and end date as attributes |
+| both | Delivering | on/off | whether ENGIE actually supplies this connection yet |
+| both | Smart meter, Data mandate | on/off | diagnostic |
 | both | Last reading date | | diagnostic |
 | Account | Monthly payment, Monthly payment advice | EUR | termijnbedrag now and ENGIE's advice, with min/max as attributes |
 | Account | Estimated year total | EUR | |
 | Account | Open amount | EUR | sum of invoices with status OPEN |
 | Account | Last transaction | EUR | date, description and status as attributes |
+| Account | Message of the day | | ENGIE's daily line, which names tomorrow's cheapest hour |
+| Account | Outage | on/off | ENGIE has posted a message |
+| Account | Outage messages, Documents, Monthly reports, Energy label | | diagnostic |
 | Account | Day-ahead electricity / gas price | EUR/kWh, EUR/m3 | only when enabled in options |
+
+### Before a contract starts
+
+ENGIE reports a connection as a smart, readable meter well before it supplies
+it, and refuses every data endpoint until it does. The **Delivering** binary
+sensor is that state: it reads `has_data` from the account record, which is what
+the gateway itself checks. While it is off, the consumption, reading and tariff
+sensors have nothing to show, and the integration does not ask for them.
+
+### The tariff sensors carry a caveat
+
+`GET /api/v1/tariffs` refuses an EAN the customer does not supply yet, so the
+rules that sort its entries into "normal", "low", "feed-in" and "standing
+charge" were read from the app's model rather than from a response. Each sensor
+is unavailable when nothing matched, never a guessed number, and the `entries`
+attribute on the Tariff sensor lists every component ENGIE sent so the total can
+be checked by hand.
 
 ENGIE receives smart-meter data once a day, so the default update interval is
 one hour. Values are what ENGIE has processed, not a live meter; for live power
