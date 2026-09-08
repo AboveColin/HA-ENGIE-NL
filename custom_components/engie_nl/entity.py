@@ -17,7 +17,12 @@ class EngieAccountEntity(CoordinatorEntity[EngieCoordinator]):
     def __init__(self, coordinator: EngieCoordinator, entry_id: str, key: str) -> None:
         super().__init__(coordinator)
         self._entry_id = entry_id
-        self._attr_unique_id = f"{entry_id}_{key}"
+        # Keyed on the customer number, not the entry id. The EAN entities are
+        # already keyed on the EAN and survive the account being removed and
+        # added again; account entities keyed on the entry id do not, and every
+        # one of them comes back as a "_2" duplicate with the old ones orphaned.
+        customer_id = coordinator.data.user.customer_id or entry_id
+        self._attr_unique_id = f"account_{customer_id}_{key}"
 
     @property
     def device_info(self) -> DeviceInfo:

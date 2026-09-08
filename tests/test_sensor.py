@@ -53,11 +53,11 @@ async def test_entities_and_values(
     assert state_of(f"{EAN_E}_last_reading_date") == "2026-09-07"
     assert state_of(f"{EAN_G}_reading_gas") == "700"
     assert state_of(f"{EAN_G}_consumption_last_day_gas") == "1.5"
-    assert state_of(f"{config_entry.entry_id}_prepayment_current") == "187.0"
-    assert state_of(f"{config_entry.entry_id}_prepayment_advice") == "195.5"
-    assert state_of(f"{config_entry.entry_id}_estimated_year_total") == "2244.0"
-    assert state_of(f"{config_entry.entry_id}_open_amount") == "-187.0"
-    assert state_of(f"{config_entry.entry_id}_last_transaction") == "-187.0"
+    assert state_of(f"account_{CUSTOMER}_prepayment_current") == "187.0"
+    assert state_of(f"account_{CUSTOMER}_prepayment_advice") == "195.5"
+    assert state_of(f"account_{CUSTOMER}_estimated_year_total") == "2244.0"
+    assert state_of(f"account_{CUSTOMER}_open_amount") == "-187.0"
+    assert state_of(f"account_{CUSTOMER}_last_transaction") == "-187.0"
 
     entity_id = registry.async_get_entity_id("sensor", DOMAIN, f"{EAN_E}_consumption_last_day")
     attrs = hass.states.get(entity_id).attributes
@@ -89,7 +89,7 @@ async def test_day_ahead_sensors_only_when_enabled(
     )
     await _setup(hass, entry)
     registry = er.async_get(hass)
-    assert registry.async_get_entity_id("sensor", DOMAIN, f"{entry.entry_id}_day_ahead_electricity")
+    assert registry.async_get_entity_id("sensor", DOMAIN, f"account_{CUSTOMER}_day_ahead_electricity")
     assert mock_client.get_day_ahead_prices.await_count == 2
 
 
@@ -102,7 +102,7 @@ async def test_extras_failure_keeps_energy_sensors(
     registry = er.async_get(hass)
     reading = hass.states.get(registry.async_get_entity_id("sensor", DOMAIN, f"{EAN_E}_reading_normal"))
     assert reading.state == "12000"
-    advice = hass.states.get(registry.async_get_entity_id("sensor", DOMAIN, f"{config_entry.entry_id}_prepayment_advice"))
+    advice = hass.states.get(registry.async_get_entity_id("sensor", DOMAIN, f"account_{CUSTOMER}_prepayment_advice"))
     assert advice.state == "unknown"
 
 
@@ -208,3 +208,25 @@ async def test_diagnostics_redact_the_welcome_name_and_the_house(
     assert payload["house"] == {"fetched": True}
     # The weather alongside it is not personal and stays readable.
     assert payload["welcome"]["meteorological_context"]["weather_description"] == "RAINY"
+
+
+async def test_every_entity_renders_its_state_and_attributes(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """Touch every entity the way Home Assistant does when it writes state.
+
+    A description that reads a field the model does not have raises only when
+    the attributes are rendered, which no per-sensor assertion reaches. This
+    caught OutageMessage.message, a field the fixture supplied and the model
+    silently dropped, so the count assertion passed while the live entity
+    failed to be added at all.
+    """
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+    entries = er.async_entries_for_config_entry(registry, config_entry.entry_id)
+    assert entries
+
+    for entry in entries:
+        state = hass.states.get(entry.entity_id)
+        assert state is not None, f"{entry.entity_id} produced no state"
+        assert state.state != "unavailable", f"{entry.entity_id} is unavailable"

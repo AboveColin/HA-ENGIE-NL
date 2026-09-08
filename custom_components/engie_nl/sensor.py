@@ -312,7 +312,14 @@ def _next_document(data: EngieData):
 def _outage_attrs(data: EngieData) -> dict[str, Any]:
     return {
         "messages": [
-            {"title": o.title, "message": o.message, "link": o.link_url} for o in data.outages
+            {
+                "title": o.title,
+                "description": o.description,
+                "start": o.start.isoformat() if o.start else None,
+                "end": o.end.isoformat() if o.end else None,
+                "link": o.link_url,
+            }
+            for o in data.outages
         ]
     }
 
@@ -328,10 +335,13 @@ def _welcome_attrs(data: EngieData) -> dict[str, Any]:
     if welcome is None or welcome.meteorological_context is None:
         return {}
     weather = welcome.meteorological_context
+    # sunrise_at and sunset_at are declared String in the app, not a timestamp
+    # type, so they arrive as ISO text already. Calling isoformat on them
+    # raises, and the entity then fails to be added at all.
     return {
         "weather": weather.weather_description,
-        "sunrise": weather.sunrise_at.isoformat() if weather.sunrise_at else None,
-        "sunset": weather.sunset_at.isoformat() if weather.sunset_at else None,
+        "sunrise": weather.sunrise_at,
+        "sunset": weather.sunset_at,
     }
 
 

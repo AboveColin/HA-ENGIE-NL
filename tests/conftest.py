@@ -170,7 +170,10 @@ def mock_client() -> Generator[MagicMock, None, None]:
     ])
     client.get_mer_periods = AsyncMock(return_value=[])
     client.get_outages = AsyncMock(return_value=[
-        OutageMessage.from_api({"id": "o1", "title": "Onderhoud", "message": "Kortdurende storing"}),
+        OutageMessage.from_api(
+            {"id": "o1", "title": "Onderhoud", "description": "Kortdurende storing",
+             "hyperlink": {"ref": "https://engie.nl/storing", "text": "meer"}}
+        ),
     ])
     client.tariffs.get = AsyncMock(return_value=make_tariffs())
     client.account.welcome = AsyncMock(return_value=WarmWelcomeResponse.from_api(
