@@ -39,8 +39,11 @@ TO_REDACT = {
     "middle_name",
     "last_name",
     "phone",
+    "phone_number",
     "mobile",
+    "gender",
     "bank_account",
+    "payment_method",
     "street",
     "house_nr",
     "house_nr_addition",
@@ -55,9 +58,29 @@ TO_REDACT = {
     "id",
     "reference",
     "parent_reference",
+    "external_contract_id",
+    # A document's display_name spells out the customer's surname, where its
+    # title does not: "Termijnnota" against "Termijnnota <name> september".
+    "display_name",
     # /api/v1/user/welcome greets the customer by name inside the message.
     "message",
+    # The standaardjaarverbruik per register. Not an identifier on its own, but
+    # six numbers describing one household's yearly energy use are a fingerprint,
+    # and the estimation sensors can be debugged from the estimation itself.
+    "sjv_normal",
+    "sjv_low",
+    "sjv_single",
+    "sjv_return_normal",
+    "sjv_return_low",
+    "sjv_return_single",
+    "profile_category",
 }
+
+# grid_owner_name, grid_owner_ean and grid_owner_phone stay readable. They name
+# the netbeheerder, a public company, and its EAN is the operator's published
+# party code, not this connection's. Behaviour differs per operator, so it is
+# the field a "why does this connection answer 400" report is read for. It
+# narrows the address to a grid area at worst, which is several provinces.
 
 
 def _raw(obj: Any) -> Any:

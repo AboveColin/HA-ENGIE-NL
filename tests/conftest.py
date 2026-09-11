@@ -54,6 +54,13 @@ def make_user() -> User:
         {
             "customer_id": CUSTOMER,
             "email": "klant@example.com",
+            # Carried in the real /user body and kept out of the model, so they
+            # reach diagnostics through raw and nothing else. The redaction
+            # test reads them back by value.
+            "gender": "V",
+            "payment_method": "INCASSO",
+            "phone_number": "0600000000",
+            "external_contract_id": "EXT-0000001",
             "delivery_addresses": [
                 {
                     "id": "adr-1",
@@ -66,9 +73,13 @@ def make_user() -> User:
                     "metering_points": [
                         {"ean": EAN_E, "type": "E", "smart": True, "readable": True,
                          "has_data": True, "single_tariff": False, "prepayment_amount": 187,
+                         "grid_owner_name": "Netbeheerder Test", "grid_owner_ean": "8700000000001",
+                         "profile_category": "E1A", "sjv_normal": 1111, "sjv_low": 2222,
+                         "sjv_return_normal": 3333, "sjv_return_low": 4444,
                          "current_product": {"name": "ENGIE Opgewekt", "start_date": "2026-09-09"}},
                         {"ean": EAN_G, "type": "G", "smart": True, "readable": True,
-                         "has_data": True, "single_tariff": True},
+                         "has_data": True, "single_tariff": True, "sjv_single": 5555,
+                         "grid_owner_name": "Netbeheerder Test"},
                     ],
                 }
             ],
@@ -164,7 +175,8 @@ def mock_client() -> Generator[MagicMock, None, None]:
     client.get_transactions = AsyncMock(return_value=make_transactions())
     client.get_day_ahead_prices = AsyncMock(return_value=[])
     client.get_documents = AsyncMock(return_value=[DocumentRef.from_api(
-        {"reference": "doc-1", "title": "Termijnnota september", "date": "2026-09-01"})])
+        {"reference": "doc-1", "title": "Termijnnota september", "date": "2026-09-01",
+         "display_name": "Termijnnota Testpersoon september"})])
     client.get_mandates = AsyncMock(return_value=[
         Mandate.from_api({"ean": EAN_E, "data": {"approval_version": "2", "start_date": "2026-09-09"}}),
     ])

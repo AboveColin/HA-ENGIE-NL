@@ -210,6 +210,37 @@ async def test_diagnostics_redact_the_welcome_name_and_the_house(
     assert payload["welcome"]["meteorological_context"]["weather_description"] == "RAINY"
 
 
+async def test_diagnostics_redact_the_account_payload_fields(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """Eleven keys a real /user body carries and the model never parses.
+
+    They reach the dump through raw, so a key name is the only thing that can
+    stop them, and the dump is what a user pastes into a public issue.
+    """
+    await _setup(hass, config_entry)
+    payload = await async_get_config_entry_diagnostics(hass, config_entry)
+    text = str(payload)
+    for value in (
+        "Testpersoon",  # display_name spells the surname out
+        "INCASSO", "0600000000", "EXT-0000001", "E1A",
+        "1111", "2222", "3333", "4444", "5555",  # the sjv_* fingerprint
+    ):
+        assert value not in text, value
+    # "V" for gender is a single letter, so read the key, not the text.
+    assert payload["user"]["gender"] == "**REDACTED**"
+    assert payload["user"]["payment_method"] == "**REDACTED**"
+    assert payload["documents"][0]["display_name"] == "**REDACTED**"
+    point = payload["eans"]["ean_0"]["point"]
+    assert point["profile_category"] == "**REDACTED**"
+    assert point["sjv_normal"] == "**REDACTED**"
+
+    # The netbeheerder is a public company and the field a failing connection
+    # is debugged from, so it stays readable.
+    assert point["grid_owner_name"] == "Netbeheerder Test"
+    assert point["grid_owner_ean"] == "8700000000001"
+
+
 async def test_a_failed_list_read_is_unknown_and_an_empty_one_is_zero(
     hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
 ) -> None:
