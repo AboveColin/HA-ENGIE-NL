@@ -14,8 +14,9 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from engie_nl import EngieApiError, User
+from engie_nl import EngieApiError, EngieAuthError, User
 
+from custom_components.engie_nl.const import DOMAIN
 from tests.conftest import EAN_E, EAN_G, make_user
 
 
@@ -73,6 +74,26 @@ async def test_the_user_record_is_still_essential(
     config_entry.add_to_hass(hass)
     assert not await hass.config_entries.async_setup(config_entry.entry_id)
     assert config_entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_a_401_on_one_read_still_asks_for_a_new_login(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """A session can expire between /user and the reads that follow it.
+
+    The gather returns that EngieAuthError as a value, and EngieAuthError
+    subclasses EngieError, so the auth check has to be tested first. Reversed,
+    the 401 is logged at debug and skipped, the entry loads, and the session
+    never gets renewed: that is what this asserts against.
+    """
+    mock_client.get_transactions = AsyncMock(side_effect=EngieAuthError("401 Unauthorized"))
+    config_entry.add_to_hass(hass)
+    await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    assert config_entry.state is ConfigEntryState.SETUP_ERROR
+    flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert flows and flows[0]["context"]["source"] == "reauth"
 
 
 async def test_account_reads_run_even_when_nothing_is_delivered(
