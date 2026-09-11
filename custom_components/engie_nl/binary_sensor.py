@@ -95,8 +95,11 @@ ACCOUNT_BINARY_SENSORS: tuple[AccountBinaryDescription, ...] = (
         # /api/v1/outages takes a customerId and answered 8 messages for this
         # account on 2026-09-08, so the list is not filtered down to outages
         # that affect the customer. Treat it as "ENGIE has something to say".
-        value_fn=lambda d: bool(d.outages),
-        attr_fn=lambda d: {"titles": [o.title for o in d.outages]},
+        # None when the read failed: this is a PROBLEM device class, so an off
+        # here would be read as "ENGIE reports no problem" by an endpoint that
+        # said nothing at all.
+        value_fn=lambda d: None if d.outages is None else bool(d.outages),
+        attr_fn=lambda d: {"titles": [o.title for o in d.outages or []]},
     ),
 )
 

@@ -93,9 +93,11 @@ async def async_get_config_entry_diagnostics(hass: HomeAssistant, entry: EngieCo
         "estimations": _raw(data.estimations),
         "transactions": [_raw(t) for t in data.transactions],
         "day_ahead": {k: [_raw(p) for p in v] for k, v in data.day_ahead.items()},
-        "documents": [_raw(d) for d in data.documents],
-        "outages": [_raw(o) for o in data.outages],
-        "mer_periods": [_raw(m) for m in data.mer_periods],
+        # None rather than [] when the read failed, so a dump shows which
+        # endpoint was silent instead of an account that owns nothing.
+        "documents": None if data.documents is None else [_raw(d) for d in data.documents],
+        "outages": None if data.outages is None else [_raw(o) for o in data.outages],
+        "mer_periods": None if data.mer_periods is None else [_raw(m) for m in data.mer_periods],
         "welcome": _raw(data.welcome),
         "happy_hours": _raw(data.happy_hours),
         "house": {"fetched": data.house is not None},

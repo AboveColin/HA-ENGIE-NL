@@ -210,6 +210,62 @@ async def test_diagnostics_redact_the_welcome_name_and_the_house(
     assert payload["welcome"]["meteorological_context"]["weather_description"] == "RAINY"
 
 
+async def test_a_failed_list_read_is_unknown_and_an_empty_one_is_zero(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """A dead endpoint must not read as "0 outages" and "no problem".
+
+    outages, documents and monthly_reports all carry state_class MEASUREMENT,
+    so a 0 from a failed read is averaged into the statistics and drags the
+    minimum down. The outage binary sensor is device_class PROBLEM, where an
+    off is an active all-clear. /mer_periods answers [] on this account, which
+    is a real count of nothing and has to stay a 0.
+    """
+    mock_client.get_outages.side_effect = EngieApiError("boom", status=500)
+    mock_client.get_documents.side_effect = EngieApiError("boom", status=500)
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+
+    def state_of(platform: str, unique_id: str) -> str:
+        entity_id = registry.async_get_entity_id(platform, DOMAIN, unique_id)
+        assert entity_id, unique_id
+        state = hass.states.get(entity_id)
+        assert state is not None, entity_id
+        return state.state
+
+    assert state_of("sensor", f"account_{CUSTOMER}_outages") == "unknown"
+    assert state_of("sensor", f"account_{CUSTOMER}_documents") == "unknown"
+    assert state_of("binary_sensor", f"account_{CUSTOMER}_outage") == "unknown"
+    assert state_of("sensor", f"account_{CUSTOMER}_monthly_reports") == "0"
+
+    # A dump has to show which endpoint was silent, not an account that owns
+    # no documents.
+    diag = await async_get_config_entry_diagnostics(hass, config_entry)
+    assert diag["documents"] is None and diag["outages"] is None
+    assert diag["mer_periods"] == []
+
+
+async def test_a_successful_empty_read_still_counts_zero(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
+) -> None:
+    """The other half of the distinction: [] from a 200 is a 0, not unknown."""
+    mock_client.get_outages.return_value = []
+    mock_client.get_documents.return_value = []
+    await _setup(hass, config_entry)
+    registry = er.async_get(hass)
+
+    def state_of(platform: str, unique_id: str) -> str:
+        entity_id = registry.async_get_entity_id(platform, DOMAIN, unique_id)
+        assert entity_id, unique_id
+        state = hass.states.get(entity_id)
+        assert state is not None, entity_id
+        return state.state
+
+    assert state_of("sensor", f"account_{CUSTOMER}_outages") == "0"
+    assert state_of("sensor", f"account_{CUSTOMER}_documents") == "0"
+    assert state_of("binary_sensor", f"account_{CUSTOMER}_outage") == "off"
+
+
 async def test_every_entity_renders_its_state_and_attributes(
     hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, config_entry: MockConfigEntry
 ) -> None:

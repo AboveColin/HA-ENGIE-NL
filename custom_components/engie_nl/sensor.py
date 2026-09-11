@@ -304,12 +304,25 @@ def _price_attrs(prices: list[DayAheadPrice] | None) -> dict[str, Any]:
     }
 
 
+def _count(items: list[Any] | None) -> int | None:
+    """How many, or None when the read failed so the sensor goes unknown.
+
+    An empty list came back from an endpoint that answered, so it is a real 0.
+    None means the endpoint did not answer, and these three sensors carry
+    state_class MEASUREMENT: a 0 there would be averaged into the statistics
+    and pull the minimum down every time ENGIE has a bad hour.
+    """
+    return None if items is None else len(items)
+
+
 def _next_document(data: EngieData):
-    dated = [d for d in data.documents if d.day is not None]
+    dated = [d for d in data.documents or [] if d.day is not None]
     return max(dated, key=lambda d: d.day or date.min) if dated else None
 
 
 def _outage_attrs(data: EngieData) -> dict[str, Any]:
+    if data.outages is None:
+        return {}
     return {
         "messages": [
             {
@@ -415,12 +428,12 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
     AccountSensorDescription(
         key="outages", translation_key="outages", entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: len(d.outages), attr_fn=_outage_attrs,
+        value_fn=lambda d: _count(d.outages), attr_fn=_outage_attrs,
     ),
     AccountSensorDescription(
         key="documents", translation_key="documents", entity_category=EntityCategory.DIAGNOSTIC,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: len(d.documents),
+        value_fn=lambda d: _count(d.documents),
         attr_fn=lambda d: {
             "latest_title": doc.title, "latest_date": doc.day.isoformat() if doc.day else None,
         } if (doc := _next_document(d)) else {},
@@ -428,7 +441,7 @@ ACCOUNT_SENSORS: tuple[AccountSensorDescription, ...] = (
     AccountSensorDescription(
         key="monthly_reports", translation_key="monthly_reports",
         entity_category=EntityCategory.DIAGNOSTIC, state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda d: len(d.mer_periods),
+        value_fn=lambda d: _count(d.mer_periods),
     ),
     AccountSensorDescription(
         key="energy_label", translation_key="energy_label",

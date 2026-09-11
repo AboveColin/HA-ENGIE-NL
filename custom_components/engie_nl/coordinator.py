@@ -110,9 +110,13 @@ class EngieData:
     estimations: EstimationCosts | None = None
     transactions: list[Transaction] = field(default_factory=list)
     day_ahead: dict[str, list[DayAheadPrice]] = field(default_factory=dict)
-    documents: list[DocumentRef] = field(default_factory=list)
-    outages: list[OutageMessage] = field(default_factory=list)
-    mer_periods: list[MerPeriod] = field(default_factory=list)
+    # None means the read failed this poll, [] means it answered with nothing.
+    # Three sensors count these and one binary sensor reports a problem from
+    # them, so collapsing the two into an empty list files a dead endpoint as a
+    # real 0 and as "no outage".
+    documents: list[DocumentRef] | None = None
+    outages: list[OutageMessage] | None = None
+    mer_periods: list[MerPeriod] | None = None
     welcome: WarmWelcomeResponse | None = None
     happy_hours: HappyHoursResponse | None = None
     house: AddressMetaData | None = None
@@ -124,9 +128,12 @@ class EngieCoordinator(DataUpdateCoordinator[EngieData]):
 
     Only the user record is essential. It proves the session works and it
     carries the devices, so if it fails the poll fails. Every other read is
-    best effort: a failure is logged at debug level and that field keeps its
-    previous value, so one unhappy endpoint cannot blank out the sensors that
-    did answer. The gateway makes this necessary rather than merely tidy:
+    best effort: a failure is logged at debug level and that field stays at the
+    empty value this poll started with, so one unhappy endpoint cannot blank
+    out the sensors that did answer. Each poll builds a fresh ``EngieData``, so
+    nothing is carried over from the previous one; a field whose read failed
+    reads as None, which the entities render as unknown rather than as a zero.
+    The gateway makes this necessary rather than merely tidy:
     measured 2026-09-07 it answered 400 for /consumptions and /mandates, 424
     for /estimations and 500 for /mer_periods on a healthy account, all in the
     same minute that /user, /meterstands and /transactions answered 200.
