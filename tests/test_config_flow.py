@@ -9,8 +9,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+import pytest
 from engie_nl import (
     EmailChallenge,
+    EngieApiError,
     EngieAuthError,
     EngieEmailCodeRequired,
     EngieMfaRequiredError,
@@ -126,22 +128,31 @@ async def test_user_flow_already_configured(
     assert result["reason"] == "already_configured"
 
 
-async def test_the_gateway_can_be_down_after_a_good_password(
-    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (EngieNetworkError("gateway down"), "cannot_connect"),
+        (EngieAuthError("401 Unauthorized"), "invalid_auth"),
+        (EngieApiError("GET /api/v1/user failed", status=500, body={}), "unknown"),
+    ],
+)
+async def test_the_account_read_can_fail_after_a_good_password(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock,
+    error: Exception, expected: str,
 ) -> None:
     """Okta and the gateway are two hosts, so the login can work and the read not.
 
     Unwrapped this escaped _finish and Home Assistant showed "Unexpected error"
-    with a traceback, for a condition the flow already has a message for.
+    with a traceback, for three conditions the flow already has messages for.
     """
-    mock_client.get_user.side_effect = EngieNetworkError("gateway down")
+    mock_client.get_user.side_effect = error
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {"username": "klant@example.com", "password": "goed"}
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
-    assert result["errors"] == {"base": "cannot_connect"}
+    assert result["errors"] == {"base": expected}
 
 
 async def test_an_account_with_no_identifier_is_refused(

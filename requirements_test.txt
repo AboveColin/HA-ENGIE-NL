@@ -1,0 +1,11 @@
+# pytest, pytest-asyncio and pytest-cov are pinned to exact versions by
+# pytest-homeassistant-custom-component, so pinning them here too only creates
+# a conflict the moment the harness moves. Let the harness choose them.
+pytest-homeassistant-custom-component
+
+# The manifest asks for engie-nl==0.2.1, which is what a user's Home Assistant
+# installs. Measured 2026-09-11: that package is on neither PyPI (404) nor
+# GitHub, so a version pin here cannot resolve and CI would install nothing.
+# The line below is the pin to use once it is published; until then the tests
+# run against the local checkout (see the Development section in the README).
+# engie-nl==0.2.1

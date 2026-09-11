@@ -11,6 +11,9 @@ It uses the same private gateway the ENGIE app uses, through the
 not document or support that API; when it changes, this integration breaks
 until it is updated.
 
+[![Validate](https://github.com/AboveColin/HA-ENGIE-NL/actions/workflows/validate.yaml/badge.svg)](https://github.com/AboveColin/HA-ENGIE-NL/actions/workflows/validate.yaml)
+[![Tests](https://github.com/AboveColin/HA-ENGIE-NL/actions/workflows/tests.yml/badge.svg)](https://github.com/AboveColin/HA-ENGIE-NL/actions/workflows/tests.yml)
+
 ## What you get
 
 One device per connection (EAN) and one for the account.
@@ -98,4 +101,15 @@ not exist at runtime; the tests are the check.
 ## Privacy
 
 Diagnostics redact tokens, your customer number, EANs, names, address and bank
-account. Nothing is sent anywhere except to ENGIE's own servers.
+account, along with your payment method, energy label profile and the
+standaardjaarverbruik of each register. The netbeheerder's name and EAN are
+kept: they name a public company, not you, and they are what a connection
+problem is read from. Nothing is sent anywhere except to ENGIE's own servers.
+
+## Credits
+
+Uses the [`engie-nl`](https://github.com/AboveColin/engie-nl) client library.
+
+## License
+
+MIT

@@ -1,0 +1,41 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      # engie-nl is not published yet, so this checks it out next to this repo
+      # the way the README's development setup does. Drop this step and
+      # uncomment the pin in requirements_test.txt once it is on PyPI.
+      - name: Check out the engie-nl library
+        uses: actions/checkout@v7
+        with:
+          repository: AboveColin/engie-nl
+          path: engie-nl
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_test.txt
+          pip install -e ./engie-nl
+
+      - name: Link the integration into the test config
+        run: |
+          site="$(python -c 'import pytest_homeassistant_custom_component as p, os; print(os.path.dirname(p.__file__))')"
+          ln -sfn "$PWD/custom_components/engie_nl" \
+            "$site/testing_config/custom_components/engie_nl"
+
+      - name: Run tests
+        run: pytest -q --cov=custom_components.engie_nl --cov-report=term-missing
