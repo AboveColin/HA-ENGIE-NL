@@ -65,9 +65,14 @@ def render(size: int) -> bytes:
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("custom_components/engie_nl/brand")
     out.mkdir(parents=True, exist_ok=True)
-    (out / "icon.png").write_bytes(render(256))
-    (out / "icon@2x.png").write_bytes(render(512))
-    print(f"wrote {out}/icon.png (256) and icon@2x.png (512)")
+    # The brand is one square glyph with no wordmark, so the logo is the icon
+    # at the same two sizes. Home Assistant asks for all four names and falls
+    # back to nothing, not to the icon, when the logo pair is missing.
+    for size, suffix in ((256, ""), (512, "@2x")):
+        png = render(size)
+        (out / f"icon{suffix}.png").write_bytes(png)
+        (out / f"logo{suffix}.png").write_bytes(png)
+    print(f"wrote icon/logo .png (256) and @2x.png (512) to {out}")
 
 
 if __name__ == "__main__":
