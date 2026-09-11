@@ -85,11 +85,36 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             self._auth = OktaAuth(session=async_get_clientsession(self.hass))
         return self._auth
 
-    async def _finish(self, tokens: TokenSet) -> ConfigFlowResult:
-        """Common tail: read the customer id, set the unique id, create or update."""
+    async def _finish(self, tokens: TokenSet, errors: dict[str, str]) -> ConfigFlowResult | None:
+        """Common tail: read the customer id, set the unique id, create or update.
+
+        Returns None once it has filled ``errors``, so the caller shows its own
+        form again. The login itself succeeded here, but /api/v1/user is a
+        second request and the gateway can be down for it; unwrapped it escaped
+        as "Unexpected error" with a traceback instead of the cannot_connect
+        this flow already translates.
+        """
         client = EngieClient(tokens, auth=self._get_auth(), session=async_get_clientsession(self.hass))
-        user = await client.get_user()
-        customer_id = user.customer_id or self._username or "engie"
+        try:
+            user = await client.get_user()
+        except EngieAuthError:
+            errors["base"] = "invalid_auth"
+            return None
+        except EngieNetworkError:
+            errors["base"] = "cannot_connect"
+            return None
+        except EngieError:
+            _LOGGER.exception("Unexpected error while reading the ENGIE account")
+            errors["base"] = "unknown"
+            return None
+
+        # The customer number keys the entry. Falling back to a literal made
+        # every account that has neither it nor an email collide on one unique
+        # id, and the second one aborted as already_configured.
+        customer_id = user.customer_id or self._username
+        if not customer_id:
+            errors["base"] = "no_customer_id"
+            return None
         await self.async_set_unique_id(customer_id)
 
         data = {CONF_USERNAME: self._username, CONF_CUSTOMER_ID: customer_id, CONF_TOKENS: tokens.to_dict()}
@@ -138,7 +163,8 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             self._username = user_input[CONF_USERNAME].strip()
             tokens = await self._login(self._username, user_input[CONF_PASSWORD], errors)
             if tokens is not None:
-                return await self._finish(tokens)
+                if (done := await self._finish(tokens, errors)) is not None:
+                    return done
             nxt = await self._next_step_after_password()
             if nxt is not None:
                 return nxt
@@ -157,7 +183,8 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
                 # the code dies with the transaction after a few minutes.
                 errors["base"] = "invalid_code"
             else:
-                return await self._finish(tokens)
+                if (done := await self._finish(tokens, errors)) is not None:
+                    return done
         return self.async_show_form(step_id="email_code", data_schema=EMAIL_CODE_SCHEMA, errors=errors)
 
     async def async_step_browser(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
@@ -173,7 +200,8 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             except EngieNetworkError:
                 errors["base"] = "cannot_connect"
             else:
-                return await self._finish(tokens)
+                if (done := await self._finish(tokens, errors)) is not None:
+                    return done
         return self.async_show_form(
             step_id="browser",
             data_schema=BROWSER_SCHEMA,
@@ -192,7 +220,8 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None and self._username:
             tokens = await self._login(self._username, user_input[CONF_PASSWORD], errors)
             if tokens is not None:
-                return await self._finish(tokens)
+                if (done := await self._finish(tokens, errors)) is not None:
+                    return done
             nxt = await self._next_step_after_password()
             if nxt is not None:
                 return nxt

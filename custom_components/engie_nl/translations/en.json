@@ -36,7 +36,8 @@
       "invalid_callback": "That address did not contain a valid code. Start again from the link above and copy the full address.",
       "cannot_connect": "Could not reach ENGIE's servers. Try again in a moment.",
       "unknown": "Something went wrong. Please try again.",
-      "invalid_code": "That code was not accepted. It may have expired; start the setup again to get a new one."
+      "invalid_code": "That code was not accepted. It may have expired; start the setup again to get a new one.",
+      "no_customer_id": "The login worked, but ENGIE returned no customer number, so this account cannot be told apart from another one. Please report this."
     },
     "abort": {
       "already_configured": "This ENGIE account is already set up.",

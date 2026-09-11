@@ -15,6 +15,7 @@ from engie_nl import (
     EngieEmailCodeRequired,
     EngieMfaRequiredError,
     EngieNetworkError,
+    User,
 )
 
 from custom_components.engie_nl.const import (
@@ -24,7 +25,7 @@ from custom_components.engie_nl.const import (
     CONF_TOKENS,
     DOMAIN,
 )
-from tests.conftest import CUSTOMER
+from tests.conftest import CUSTOMER, make_user
 
 
 async def test_user_flow_creates_entry(hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock) -> None:
@@ -123,6 +124,41 @@ async def test_user_flow_already_configured(
     )
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
+
+
+async def test_the_gateway_can_be_down_after_a_good_password(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """Okta and the gateway are two hosts, so the login can work and the read not.
+
+    Unwrapped this escaped _finish and Home Assistant showed "Unexpected error"
+    with a traceback, for a condition the flow already has a message for.
+    """
+    mock_client.get_user.side_effect = EngieNetworkError("gateway down")
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "klant@example.com", "password": "goed"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+    assert result["errors"] == {"base": "cannot_connect"}
+
+
+async def test_an_account_with_no_identifier_is_refused(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """No customer number and no email left both accounts keyed on one literal.
+
+    The second one then aborted as already_configured with nothing said about
+    why, so the flow now stops at the account it cannot name.
+    """
+    mock_client.get_user.return_value = User.from_api({**make_user().raw, "customer_id": None})
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "   ", "password": "goed"}
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "no_customer_id"}
 
 
 async def test_reauth_updates_tokens(
