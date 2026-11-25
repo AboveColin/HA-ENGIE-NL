@@ -78,6 +78,12 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         self._username: str | None = None
         self._browser: BrowserLogin | None = None
         self._email_challenge: EmailChallenge | None = None
+        # The newest tokens of the login in progress: set when a code is
+        # exchanged, and replaced by whatever the client holds after the account
+        # read. The emailed code and the pasted callback code are single use and
+        # Okta rotates the refresh token, so a retry after a failed read must
+        # start from these and from nothing older.
+        self._tokens: TokenSet | None = None
         self._auth: OktaAuth | None = None
 
     def _get_auth(self) -> OktaAuth:
@@ -107,6 +113,11 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.exception("Unexpected error while reading the ENGIE account")
             errors["base"] = "unknown"
             return None
+        finally:
+            # A 401 makes the client refresh, and Okta rotates the refresh token:
+            # the pair passed in above may already be dead. Keep the client's
+            # pair, on failure for the retry and on success for the entry.
+            self._tokens = client.tokens
 
         # The customer number keys the entry. Falling back to a literal made
         # every account that has neither it nor an email collide on one unique
@@ -117,7 +128,7 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             return None
         await self.async_set_unique_id(customer_id)
 
-        data = {CONF_USERNAME: self._username, CONF_CUSTOMER_ID: customer_id, CONF_TOKENS: tokens.to_dict()}
+        data = {CONF_USERNAME: self._username, CONF_CUSTOMER_ID: customer_id, CONF_TOKENS: self._tokens.to_dict()}
         if self.source == "reauth":
             entry = self._get_reauth_entry()
             self._abort_if_unique_id_mismatch(reason="wrong_account")
@@ -133,11 +144,21 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         (the normal case for ENGIE) or, for a factor this client cannot answer,
         the browser flow.
         """
+        self._tokens = None
         try:
             return await self._get_auth().login(username, password)
         except EngieEmailCodeRequired as err:
             self._email_challenge = err.challenge
-        except EngieMfaRequiredError:
+        except EngieMfaRequiredError as err:
+            # The message names the authenticators Okta offered, and status the
+            # remediations; neither holds a secret. Without this line the browser
+            # step appears with no trace of why the email code step was skipped.
+            _LOGGER.warning(
+                "ENGIE offered no authenticator the email code step can use, "
+                "so the login falls back to the browser. %s (remediations: %s)",
+                err,
+                err.status,
+            )
             self._browser = self._get_auth().begin_browser_login()
         except EngieAuthError:
             errors["base"] = "invalid_auth"
@@ -174,16 +195,22 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         """Take the one-time code ENGIE emailed and finish the login."""
         errors: dict[str, str] = {}
         if user_input is not None and self._email_challenge is not None:
-            try:
-                tokens = await self._get_auth().submit_email_code(self._email_challenge, user_input["code"])
-            except EngieNetworkError:
-                errors["base"] = "cannot_connect"
-            except EngieAuthError:
-                # Okta rejects a wrong code and an expired one the same way, and
-                # the code dies with the transaction after a few minutes.
-                errors["base"] = "invalid_code"
-            else:
-                if (done := await self._finish(tokens, errors)) is not None:
+            if self._tokens is None:
+                try:
+                    self._tokens = await self._get_auth().submit_email_code(
+                        self._email_challenge, user_input["code"]
+                    )
+                except EngieNetworkError:
+                    errors["base"] = "cannot_connect"
+                except EngieAuthError:
+                    # Okta rejects a wrong code and an expired one the same way, and
+                    # the code dies with the transaction after a few minutes.
+                    errors["base"] = "invalid_code"
+            if self._tokens is not None:
+                # The code is single use. When the account read fails after a good
+                # exchange, the next submit comes back here and retries only the
+                # read; sending the spent code again could only be refused.
+                if (done := await self._finish(self._tokens, errors)) is not None:
                     return done
         return self.async_show_form(step_id="email_code", data_schema=EMAIL_CODE_SCHEMA, errors=errors)
 
@@ -193,14 +220,18 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             self._browser = self._get_auth().begin_browser_login()
         errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                tokens = await self._get_auth().finish_browser_login(user_input["callback_url"].strip(), self._browser)
-            except EngieAuthError:
-                errors["base"] = "invalid_callback"
-            except EngieNetworkError:
-                errors["base"] = "cannot_connect"
-            else:
-                if (done := await self._finish(tokens, errors)) is not None:
+            if self._tokens is None:
+                try:
+                    self._tokens = await self._get_auth().finish_browser_login(
+                        user_input["callback_url"].strip(), self._browser
+                    )
+                except EngieAuthError:
+                    errors["base"] = "invalid_callback"
+                except EngieNetworkError:
+                    errors["base"] = "cannot_connect"
+            if self._tokens is not None:
+                # The callback code is single use as well: retry only the read.
+                if (done := await self._finish(self._tokens, errors)) is not None:
                     return done
         return self.async_show_form(
             step_id="browser",
