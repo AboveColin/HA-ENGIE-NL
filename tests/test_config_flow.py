@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 from homeassistant import config_entries
@@ -81,6 +82,34 @@ async def test_user_flow_mfa_goes_to_browser_step(hass: HomeAssistant, mock_auth
     mock_auth.finish_browser_login.assert_awaited_once()
 
 
+async def test_the_browser_fallback_logs_what_okta_offered(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Without this line the browser step shows up with no sign of why the code step was skipped."""
+    mock_auth.login.side_effect = EngieMfaRequiredError(
+        "Okta wants an authenticator this client cannot answer; it offered: Okta Verify, Telefoon",
+        status="select-authenticator-authenticate",
+        factors=[{"factorType": "Okta Verify"}, {"factorType": "Telefoon"}],
+    )
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    with caplog.at_level(logging.WARNING, logger="custom_components.engie_nl.config_flow"):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"username": "klant@example.com", "password": "geheim-wachtwoord"}
+        )
+    assert result["step_id"] == "browser"
+
+    # The harness logs its own warning about custom integrations, so pick ours by logger name.
+    ours = [r for r in caplog.records if r.name == "custom_components.engie_nl.config_flow"]
+    assert [r.levelno for r in ours] == [logging.WARNING]
+    text = ours[0].getMessage()
+    assert "Okta Verify, Telefoon" in text
+    assert "select-authenticator-authenticate" in text
+    assert "falls back to the browser" in text
+    # The username and password are in scope where this logs; neither may reach it.
+    assert "klant@example.com" not in text
+    assert "geheim-wachtwoord" not in text
+
+
 async def _to_email_code_step(hass: HomeAssistant, mock_auth: MagicMock) -> dict:
     """Walk the user step for an account that needs an emailed code."""
     challenge = EmailChallenge(state_handle="sh-1", answer_href="https://okta/answer", verifier="v-1")
@@ -114,6 +143,57 @@ async def test_email_code_rejected_keeps_the_form(
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "000000"})
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "invalid_code"}
+
+
+def _fail_reads(mock_client: MagicMock, times: int) -> None:
+    """Make ``get_user`` fail ``times`` times, then succeed for every later read, setup included."""
+    failures = [EngieNetworkError(f"gateway stalled {n}") for n in range(times)]
+
+    async def get_user() -> User:
+        if failures:
+            raise failures.pop(0)
+        return make_user()
+
+    mock_client.get_user.side_effect = get_user
+
+
+async def test_email_code_retry_after_a_failed_account_read_reuses_the_tokens(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """The code is single use: once it is exchanged, a gateway failure must not cost the login."""
+    result = await _to_email_code_step(hass, mock_auth)
+    _fail_reads(mock_client, 1)
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "123456"})
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "email_code"
+    assert result["errors"] == {"base": "cannot_connect"}
+
+    # Whatever the user types now, the spent code is not sent to Okta again.
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "123456"})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TOKENS]["access_token"] == "okta-access"
+    mock_auth.submit_email_code.assert_awaited_once()
+
+
+async def test_email_code_stays_exchanged_across_repeated_account_read_failures(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """A rejected code is retried with the new code; an exchanged one never is, however often the read fails."""
+    result = await _to_email_code_step(hass, mock_auth)
+    mock_auth.submit_email_code.side_effect = [EngieAuthError("Ongeldige code"), mock_auth.submit_email_code.return_value]
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "000000"})
+    assert result["errors"] == {"base": "invalid_code"}
+
+    _fail_reads(mock_client, 2)
+    for _ in range(2):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "123456"})
+        assert result["errors"] == {"base": "cannot_connect"}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "123456"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert mock_auth.submit_email_code.await_count == 2
+    assert [call.args[1] for call in mock_auth.submit_email_code.await_args_list] == ["000000", "123456"]
 
 
 async def test_user_flow_already_configured(

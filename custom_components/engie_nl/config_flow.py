@@ -78,6 +78,9 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         self._username: str | None = None
         self._browser: BrowserLogin | None = None
         self._email_challenge: EmailChallenge | None = None
+        # Set once the emailed code has been exchanged. The code is spent by
+        # then, so a failure after this point must retry with these tokens.
+        self._email_tokens: TokenSet | None = None
         self._auth: OktaAuth | None = None
 
     def _get_auth(self) -> OktaAuth:
@@ -137,7 +140,16 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self._get_auth().login(username, password)
         except EngieEmailCodeRequired as err:
             self._email_challenge = err.challenge
-        except EngieMfaRequiredError:
+        except EngieMfaRequiredError as err:
+            # The message names the authenticators Okta offered, and status the
+            # remediations; neither holds a secret. Without this line the browser
+            # step appears with no trace of why the email code step was skipped.
+            _LOGGER.warning(
+                "ENGIE offered no authenticator the email code step can use, "
+                "so the login falls back to the browser. %s (remediations: %s)",
+                err,
+                err.status,
+            )
             self._browser = self._get_auth().begin_browser_login()
         except EngieAuthError:
             errors["base"] = "invalid_auth"
@@ -174,16 +186,22 @@ class EngieConfigFlow(ConfigFlow, domain=DOMAIN):
         """Take the one-time code ENGIE emailed and finish the login."""
         errors: dict[str, str] = {}
         if user_input is not None and self._email_challenge is not None:
-            try:
-                tokens = await self._get_auth().submit_email_code(self._email_challenge, user_input["code"])
-            except EngieNetworkError:
-                errors["base"] = "cannot_connect"
-            except EngieAuthError:
-                # Okta rejects a wrong code and an expired one the same way, and
-                # the code dies with the transaction after a few minutes.
-                errors["base"] = "invalid_code"
-            else:
-                if (done := await self._finish(tokens, errors)) is not None:
+            if self._email_tokens is None:
+                try:
+                    self._email_tokens = await self._get_auth().submit_email_code(
+                        self._email_challenge, user_input["code"]
+                    )
+                except EngieNetworkError:
+                    errors["base"] = "cannot_connect"
+                except EngieAuthError:
+                    # Okta rejects a wrong code and an expired one the same way, and
+                    # the code dies with the transaction after a few minutes.
+                    errors["base"] = "invalid_code"
+            if self._email_tokens is not None:
+                # The code is single use. When the account read fails after a good
+                # exchange, the next submit comes back here and retries only the
+                # read; sending the spent code again could only be refused.
+                if (done := await self._finish(self._email_tokens, errors)) is not None:
                     return done
         return self.async_show_form(step_id="email_code", data_schema=EMAIL_CODE_SCHEMA, errors=errors)
 
