@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
@@ -18,6 +18,7 @@ from engie_nl import (
     EngieEmailCodeRequired,
     EngieMfaRequiredError,
     EngieNetworkError,
+    TokenSet,
     User,
 )
 
@@ -194,6 +195,90 @@ async def test_email_code_stays_exchanged_across_repeated_account_read_failures(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert mock_auth.submit_email_code.await_count == 2
     assert [call.args[1] for call in mock_auth.submit_email_code.await_args_list] == ["000000", "123456"]
+
+
+REFRESHED = TokenSet(access_token="okta-access-2", refresh_token="okta-refresh-2", expires_at=9_999_999_999.0)
+
+
+def _refresh_then_stall(mock_client: MagicMock) -> None:
+    """A 401 makes the client refresh, Okta rotates the refresh token, and then the gateway stalls.
+
+    The first read leaves the refreshed pair on the client and fails; every later read works.
+    """
+    calls = 0
+
+    async def get_user() -> User:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            mock_client.tokens = REFRESHED
+            raise EngieNetworkError("gateway stalled after the refresh")
+        return make_user()
+
+    mock_client.get_user.side_effect = get_user
+
+
+async def test_a_refresh_during_a_stalled_read_is_what_the_retry_and_the_entry_use(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """The pre-refresh refresh token is dead once Okta rotates it, so the retry must not start from it."""
+    result = await _to_email_code_step(hass, mock_auth)
+    _refresh_then_stall(mock_client)
+
+    with patch("custom_components.engie_nl.config_flow.EngieClient", return_value=mock_client) as client_cls:
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "123456"})
+        assert result["errors"] == {"base": "cannot_connect"}
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {"code": "123456"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TOKENS]["access_token"] == "okta-access-2"
+    assert result["data"][CONF_TOKENS]["refresh_token"] == "okta-refresh-2"
+    mock_auth.submit_email_code.assert_awaited_once()
+    first, second = (call.args[0] for call in client_cls.call_args_list)
+    assert first.access_token == "okta-access"
+    assert second.access_token == "okta-access-2"
+
+
+async def test_the_entry_stores_the_tokens_the_client_holds_after_a_refresh(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """A refresh inside the account read succeeds; the entry must hold the new pair, not the one passed in."""
+
+    async def get_user() -> User:
+        mock_client.tokens = REFRESHED
+        return make_user()
+
+    mock_client.get_user.side_effect = get_user
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "klant@example.com", "password": "goed"}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TOKENS]["access_token"] == "okta-access-2"
+    assert result["data"][CONF_TOKENS]["refresh_token"] == "okta-refresh-2"
+
+
+async def test_the_browser_step_retries_only_the_read_with_the_refreshed_tokens(
+    hass: HomeAssistant, mock_auth: MagicMock, mock_client: MagicMock
+) -> None:
+    """The pasted callback code is single use too: after a good exchange a stalled read must not spend it again."""
+    mock_auth.login.side_effect = EngieMfaRequiredError("mfa", status="MFA_REQUIRED")
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": config_entries.SOURCE_USER})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"username": "klant@example.com", "password": "goed"}
+    )
+    assert result["step_id"] == "browser"
+    _refresh_then_stall(mock_client)
+
+    callback = {"callback_url": "engie://login/okta/callback?code=abc&state=st"}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], callback)
+    assert result["step_id"] == "browser"
+    assert result["errors"] == {"base": "cannot_connect"}
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], callback)
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_TOKENS]["access_token"] == "okta-access-2"
+    mock_auth.finish_browser_login.assert_awaited_once()
 
 
 async def test_user_flow_already_configured(
